@@ -8,6 +8,8 @@ import os
 import sys
 import pdb
 import time
+import errno
+import fcntl
 import getopt
 import signal
 import datetime
@@ -26,19 +28,34 @@ def syntax(s):
 def run(parent):
   done = False
   buffer = ""
+  c = None
+  lastByte = datetime.datetime.now()
   while not done:
-    c = os.read(parent.readFd, 1)
-    if c:
-      parent.lock.acquire()
-      buffer += c
-      if c == "\n":
-        parent.standardStream.write(buffer)
-        parent.captureStream.write(buffer)
-        buffer = ""
-      parent.lock.release()
+    now = datetime.datetime.now()
+
+    # if we've read nothing for a half-second or more, wait a half second before we try to read again
+    if (now - lastByte) >= datetime.timedelta(seconds=0.5):
+      # print "sleeping: now={now}, lastByte={lastByte}, c={c}".format(**locals())
+      time.sleep(0.5)
+      now = datetime.datetime.now()
+    try:
+      c = os.read(parent.readFd, 1)
+    except Exception as e:
+      if e.errno != errno.EAGAIN:
+        raise e
     else:
-      parent.captureStream.write(buffer)
-      done = True
+      lastByte = now
+      if c:
+        parent.lock.acquire()
+        buffer += c
+        if c == "\n":
+          parent.standardStream.write(buffer)
+          parent.captureStream.write(buffer)
+          buffer = ""
+        parent.lock.release()
+      else:
+        parent.captureStream.write(buffer)
+        done = True
 
 class Capture(file):
   def __init__(self, standardStream, captureStream):
@@ -50,6 +67,9 @@ class Capture(file):
     self.bytes = 0
     self.__closed = False
     self.lock = threading.Lock()
+
+    # do not block on reads
+    fcntl.fcntl(self.readFd, fcntl.F_SETFL, fcntl.fcntl(self.readFd, fcntl.F_GETFL) + os.O_NONBLOCK)
 
     self.thread = threading.Thread(target=run, args=(self,))
     self.thread.start()
@@ -141,6 +161,10 @@ def signalHandler(signum, stack):
   print "Goodbye, cruel world"
   os._exit(1)
 
+def unbuffer(streamName):
+  global sys
+  setattr(sys, streamName, os.fdopen(getattr(sys, streamName).fileno(), "w", 0))
+
 (opts,args) = ([],[])
 try:
   (opts,args) = getopt.getopt(sys.argv[1:], "do:", ["debug", "output="])
@@ -174,6 +198,9 @@ if not captureFilename:
 
 captureFile = open(captureFilename, "w", 0)
 print "Writing to %s" % repr(captureFilename)
+
+unbuffer("stdout")
+unbuffer("stderr")
 
 stdoutCapture = Capture(sys.stdout, captureFile)
 stderrCapture = Capture(sys.stderr, captureFile)
