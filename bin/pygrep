@@ -4,9 +4,19 @@ import re
 import sys
 import getopt
 
+def syntax(msg=None):
+  if msg:
+    sys.stderr.write('{msg}\n'.format(**locals()))
+  sys.stderr.write("Syntax: %s [-ivn] regexp [file ...]\n" % sys.argv[0])
+  exit(1)
+
 ignoreCase = False
 negate = False
 numbers = False
+excludes = []
+
+after = 0
+before = 0
 
 def process(filename=None):
   if filename:
@@ -14,30 +24,40 @@ def process(filename=None):
   else:
     f = sys.stdin
 
-  lineno = 0
-  for line in f:
-    lineno += 1
-    line = line.strip('\n')
+  lines = f.read().splitlines()
+  data = '\n'.join(lines)
+  newlines = [pos for pos in range(len(data)) if data[pos] == '\n']
+  for match in regexp.finditer(data):
+    pos = 0
+    while pos < len(newlines):
+      if match.start() < newlines[pos]:
+        break
+      else:
+        pos += 1
+    line = lines[pos]
     tmp = line
     for exclude in excludes:
       tmp = exclude.sub("", tmp)
     match = regexp.search(tmp)
     if (match and (not negate)) or ((not match) and negate):
-      if filename:
-        sys.stdout.write(filename)
-        if numbers: sys.stdout.write(' ')
-      if numbers:
-        sys.stdout.write(lineno)
-      if filename or numbers:
-        sys.stdout.write(':')
-      sys.stdout.write("%s\n" % line)
+      if before or after:
+        print '-'*50
+      first = max(0, pos-before)
+      last = min(len(lines)-1, pos+after)
+      for curr in range(first, last+1):
+        if filename:
+          sys.stdout.write(filename)
+          if numbers: sys.stdout.write(' ')
+        if numbers:
+          sys.stdout.write(curr+1)
+        if filename or numbers:
+          sys.stdout.write(':')
+        sys.stdout.write("%s\n" % lines[curr])
     
   if filename:
     f.close()
 
-excludes = []
-
-(opts,args) = getopt.getopt(sys.argv[1:], "x:nvi", [])
+(opts,args) = getopt.getopt(sys.argv[1:], "x:nviA:B:C:", [])
 for (opt,arg) in opts:
   if opt == "-v":
     negate = not negate
@@ -47,15 +67,23 @@ for (opt,arg) in opts:
     numbers = not numbers
   elif opt == "-x":
     excludes.append(re.compile(arg, flags=re.IGNORECASE if ignoreCase else 0))
+  elif opt == "-A":
+    after = int(arg)
+  elif opt == "-B":
+    before = int(arg)
+  elif opt == "-C":
+    after = int(arg)
+    before = int(arg)
   else:
-    sys.stderr.write("Unhandled option: `%s`\n" % opt)
-    exit(1)
+    syntax("Unhandled option: {opt!r}".format(**locals()))
 
+if negate and (before or after):
+  syntax('-A, -B, and -C are incompatible with negative searches')
+  
 if not args:
-  sys.stderr.write("Syntax: %s [-ivn] regexp [file ...]\n" % sys.argv[0])
-  exit(1)
+  syntax()
 
-regexp = re.compile(args.pop(0), flags=re.IGNORECASE if ignoreCase else 0)
+regexp = re.compile(args.pop(0), flags=(re.IGNORECASE if ignoreCase else 0) + re.DOTALL)
 
 if args:
   for filename in args:
